@@ -31,6 +31,12 @@ import 'exceptions.dart';
 /// );
 /// ```
 class FirestoreCache {
+  /// Whether to enable logs.
+  static var enableLogs = true;
+  static void _log(String message) {
+    if (enableLogs) debugPrint(message);
+  }
+
   /// Fetch a document with read from cache first then server.
   ///
   /// This method takes in a [docRef] which is the usual [DocumentReference]
@@ -60,6 +66,7 @@ class FirestoreCache {
       doc = await docRef.get();
     }
 
+    _log('[FirestoreCache] document "${docRef.path}" fetched from ${doc.metadata.isFromCache ? 'cache' : 'server'}');
     return doc;
   }
 
@@ -191,8 +198,10 @@ class FirestoreCache {
   /// Shortcut for [getDocuments] with [cacheMode] set to [FirestoreCacheMode.cacheOnly].
   static Future<QuerySnapshot<Map<String, dynamic>>> getDocumentsFromCacheOnly({
     required Query<Map<String, dynamic>> query,
-  }) {
-    return query.get(const GetOptions(source: Source.cache));
+  }) async {
+    final snapshot = await query.get(const GetOptions(source: Source.cache));
+    _log('[FirestoreCache] ${snapshot.docs.length} documents fetched from cache, with query: "${query.toString()}"');
+    return snapshot;
   }
 
   /// Fetch documents from [source].
@@ -224,6 +233,7 @@ class FirestoreCache {
       await prefs.setString(localCacheKey, DateTime.now().toIso8601String());
     }
 
+    _log('[FirestoreCache] ${snapshot.docs.length} documents fetched from ${snapshot.metadata.isFromCache ? 'cache' : 'server'}, with query: "${query.toString()}"');
     return snapshot;
   }
 
@@ -247,6 +257,7 @@ class FirestoreCache {
       onListen: () async {
         // Push cached data first
         controller.add(await query.get(const GetOptions(source: Source.cache)));
+        _log('[FirestoreCache] cached data emitted in stream of query: "${query.toString()}"');
 
         // Then listen to [firestoreCacheField] changes
         snapshotStreamSubscription = firebaseCacheDocRef.snapshots().listen((doc) async {
@@ -266,6 +277,7 @@ class FirestoreCache {
           // Push new value if it's new (from server)
           if (!snapshot.metadata.isFromCache) {
             controller.add(snapshot);
+            _log('[FirestoreCache] new server data emitted in stream of query: "${query.toString()}"');
           }
         }, onError: controller.addError);
       },
@@ -317,6 +329,7 @@ class FirestoreCache {
       }
     }
 
+    _log('[FirestoreCache] cache of "${firebaseCacheDocRef.path}" is ${shouldFetch ? 'stale' : 'up-to-date'}');
     return shouldFetch;
   }
 }
