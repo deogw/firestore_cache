@@ -63,6 +63,13 @@ class FirestoreCache {
 
   /// Fetch documents with read read from cache first then server.
   ///
+  /// Will attempt to read the [firestoreCacheField] field of the [cacheDocRef] document to determine if the cache is stale.
+  /// So it may cost 1 read, even if cache is up to date.
+  /// And it may cause some delay when offline (waiting for timeout).
+  ///
+  /// Use [cacheOnly] to force reading from cache only, skipping server's date check.
+  /// In that case, if cache is empty, it will return an empty snapshot.
+  ///
   /// This method takes in a [query] which is the usual Firestore [Query] object
   /// used to query a collection, and a [cacheDocRef] which is the timestamp
   /// [DocumentReference] object of the document containing the
@@ -83,15 +90,23 @@ class FirestoreCache {
     required String firestoreCacheField,
     String? localCacheKey,
     bool isUpdateCacheDate = true,
+    bool cacheOnly = false,
   }) async {
-    localCacheKey = localCacheKey ?? firestoreCacheField;
+    // If it is set to read from cache only, directly return the snapshot from cache, without fallback.
+    if (cacheOnly) {
+      return await query.get(const GetOptions(source: Source.cache));
+    }
 
+    // Determine whether to fetch documents from cache or server.
+    localCacheKey = localCacheKey ?? firestoreCacheField;
     final isFetch = await isFetchDocuments(
       cacheDocRef,
       firestoreCacheField,
       localCacheKey,
     );
     final src = isFetch ? Source.serverAndCache : Source.cache;
+
+    // Fetch documents from source.
     var snapshot = await query.get(GetOptions(source: src));
 
     // If it is triggered to get documents from cache but the documents do not
@@ -107,7 +122,7 @@ class FirestoreCache {
     if (isUpdateCacheDate &&
         snapshot.docs.isNotEmpty &&
         snapshot.docs.any((doc) => doc.metadata.isFromCache == false)) {
-      var prefs = await SharedPreferences.getInstance();
+      final prefs = await SharedPreferences.getInstance();
       await prefs.setString(localCacheKey, DateTime.now().toIso8601String());
     }
 
