@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -61,7 +63,7 @@ class FirestoreCache {
     return doc;
   }
 
-  /// Fetch documents with read read from cache first then server.
+  /// Fetch documents once with read from cache first then server, based on a date system.
   ///
   /// Will attempt to read the [firestoreCacheField] field of the [cacheDocRef] document to determine if the cache is stale.
   /// So it may cost 1 read, even if cache is up to date.
@@ -84,6 +86,8 @@ class FirestoreCache {
   /// You can also pass in [localCacheKey] as the key for storing the last local
   /// cache date, and [isUpdateCacheDate] to set if it should update the last
   /// local cache date to current date and time.
+  ///
+  /// You can also pass in [serversDateRaw] to provide the latest server's date to be compared to, to avoid a read operation.
   static Future<QuerySnapshot<Map<String, dynamic>>> getDocuments({
     required Query<Map<String, dynamic>> query,
     required DocumentReference<Map<String, dynamic>> cacheDocRef,
@@ -91,6 +95,7 @@ class FirestoreCache {
     String? localCacheKey,
     bool isUpdateCacheDate = true,
     bool cacheOnly = false,
+    dynamic serversDateRaw,
   }) async {
     // If it is set to read from cache only, directly return the snapshot from cache, without fallback.
     if (cacheOnly) {
@@ -99,12 +104,13 @@ class FirestoreCache {
 
     // Determine whether to fetch documents from cache or server.
     localCacheKey = localCacheKey ?? firestoreCacheField;
-    final isFetch = await isFetchDocuments(
+    final shouldFetch = await shouldFetchDocuments(
       cacheDocRef,
       firestoreCacheField,
       localCacheKey,
+      serversDateRaw,
     );
-    final src = isFetch ? Source.serverAndCache : Source.cache;
+    final src = shouldFetch ? Source.serverAndCache : Source.cache;
 
     // Fetch documents from source.
     var snapshot = await query.get(GetOptions(source: src));
@@ -129,30 +135,80 @@ class FirestoreCache {
     return snapshot;
   }
 
+  /// Like [getDocuments], but returns a [Stream] of [QuerySnapshot] instead.
+  /// Will quickly emmit a value from cache, then listen and emmit changes.
+  ///
+  /// See [getDocuments] for more details.
+  static Stream<QuerySnapshot<Map<String, dynamic>>> getDocumentsSnapshots({
+    required Query<Map<String, dynamic>> query,
+    required DocumentReference<Map<String, dynamic>> cacheDocRef,
+    required String firestoreCacheField,
+    String? localCacheKey,
+    bool isUpdateCacheDate = true,
+  }) {
+    // It's fine to let the StreamController be garbage collected once all the
+    // subscribers have cancelled; this analyzer warning is safe to ignore.
+    late StreamController<QuerySnapshot<Map<String, dynamic>>> controller; // ignore: close_sinks
+
+    StreamSubscription<DocumentSnapshot>? snapshotStreamSubscription;
+    controller = StreamController<QuerySnapshot<Map<String, dynamic>>>.broadcast(
+      onListen: () async {
+        // Push cached data first
+        controller.add(await query.get(const GetOptions(source: Source.cache)));
+
+        // Then listen to [firestoreCacheField] changes
+        snapshotStreamSubscription = cacheDocRef.snapshots().listen((doc) async {
+          // Get server's date
+          final serversDateRaw = doc.data()?[firestoreCacheField];
+
+          // Get data from cache or server, providing latest server's date
+          final snapshot = await getDocuments(
+            query: query,
+            cacheDocRef: cacheDocRef,
+            firestoreCacheField: firestoreCacheField,
+            localCacheKey: localCacheKey,
+            isUpdateCacheDate: isUpdateCacheDate,
+            serversDateRaw: serversDateRaw,
+          );
+
+          // Push new value if it's new (from server)
+          if (!snapshot.metadata.isFromCache) {
+            controller.add(snapshot);
+          }
+        }, onError: controller.addError);
+      },
+      onCancel: () => snapshotStreamSubscription?.cancel(),
+    );
+
+    return controller.stream;
+  }
+
   @visibleForTesting
-  static Future<bool> isFetchDocuments(
+  static Future<bool> shouldFetchDocuments(
     DocumentReference<Map<String, dynamic>> cacheDocRef,
     String firestoreCacheField,
     String localCacheKey,
+    dynamic serverDateRaw,
   ) async {
-    var isFetch = true;
+    var shouldFetch = true;
     final prefs = await SharedPreferences.getInstance();
     final dateStr = prefs.getString(localCacheKey);
 
     if (dateStr != null) {
       final cacheDate = DateTime.parse(dateStr);
-      final doc = await cacheDocRef.get();
-      final data = doc.data();
 
-      if (!doc.exists) {
-        throw CacheDocDoesNotExist();
-      } else if (data == null || !data.containsKey(firestoreCacheField)) {
-        throw CacheDocFieldDoesNotExist();
+      if (serverDateRaw == null) {
+        final doc = await cacheDocRef.get();
+        final data = doc.data();
+        if (!doc.exists) {
+          throw CacheDocDoesNotExist();
+        } else if (data == null || !data.containsKey(firestoreCacheField)) {
+          throw CacheDocFieldDoesNotExist();
+        }
+        serverDateRaw = data[firestoreCacheField];
       }
 
-      final serverDateRaw = data[firestoreCacheField];
       DateTime? serverDate;
-
       if (serverDateRaw is Timestamp) {
         serverDate = serverDateRaw.toDate();
       } else if (serverDateRaw is String) {
@@ -162,10 +218,10 @@ class FirestoreCache {
       if (serverDate == null) {
         throw FormatException('Invalid date format', serverDateRaw);
       } else if (serverDate.isBefore(cacheDate) == true) {
-        isFetch = false;
+        shouldFetch = false;
       }
     }
 
-    return isFetch;
+    return shouldFetch;
   }
 }
