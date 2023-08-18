@@ -181,7 +181,7 @@ void main() {
 
       final snapshot = await FirestoreCache.getDocuments(
         query: mockQuery,
-        cacheDocRef: mockCacheDocRef,
+        firebaseCacheDocRef: mockCacheDocRef,
         firestoreCacheField: cacheField,
       );
       final doc = snapshot.docs.first;
@@ -219,7 +219,7 @@ void main() {
 
       final snapshot = await FirestoreCache.getDocuments(
         query: mockQuery,
-        cacheDocRef: mockCacheDocRef,
+        firebaseCacheDocRef: mockCacheDocRef,
         firestoreCacheField: cacheField,
       );
       final doc = snapshot.docs.first;
@@ -238,7 +238,7 @@ void main() {
     test('testLocalCacheDateNull', () async {
       SharedPreferences.setMockInitialValues({});
 
-      final result = await FirestoreCache.isFetchDocuments(
+      final result = await FirestoreCache.shouldFetchDocuments(
         mockCacheDocRef,
         cacheField,
         cacheField,
@@ -257,7 +257,7 @@ void main() {
         cacheField: Timestamp.fromDate(updatedAt),
       });
 
-      final result = await FirestoreCache.isFetchDocuments(
+      final result = await FirestoreCache.shouldFetchDocuments(
         mockCacheDocRef,
         cacheField,
         cacheField,
@@ -276,7 +276,7 @@ void main() {
         cacheField: Timestamp.fromDate(updatedAt),
       });
 
-      final result = await FirestoreCache.isFetchDocuments(
+      final result = await FirestoreCache.shouldFetchDocuments(
         mockCacheDocRef,
         cacheField,
         cacheField,
@@ -295,7 +295,7 @@ void main() {
         cacheField: updatedAt.toIso8601String(),
       });
 
-      final result = await FirestoreCache.isFetchDocuments(
+      final result = await FirestoreCache.shouldFetchDocuments(
         mockCacheDocRef,
         cacheField,
         cacheField,
@@ -313,7 +313,7 @@ void main() {
       when(() => mockCacheSnapshot.exists).thenReturn(false);
 
       expect(
-        () async => await FirestoreCache.isFetchDocuments(
+        () async => await FirestoreCache.shouldFetchDocuments(
           mockCacheDocRef,
           cacheField,
           cacheField,
@@ -331,7 +331,7 @@ void main() {
       when(() => mockCacheSnapshot.exists).thenReturn(true);
 
       expect(
-        () async => await FirestoreCache.isFetchDocuments(
+        () async => await FirestoreCache.shouldFetchDocuments(
           mockCacheDocRef,
           cacheField,
           cacheField,
@@ -350,7 +350,7 @@ void main() {
       });
 
       expect(
-        () async => await FirestoreCache.isFetchDocuments(
+        () async => await FirestoreCache.shouldFetchDocuments(
           mockCacheDocRef,
           cacheField,
           cacheField,

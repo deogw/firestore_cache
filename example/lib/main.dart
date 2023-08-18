@@ -124,7 +124,7 @@ class MyHomePageState extends State<MyHomePage> {
     final query = _firestore.collection('posts');
     final snapshot = await FirestoreCache.getDocuments(
       query: query,
-      cacheDocRef: cacheDocRef,
+      firebaseCacheDocRef: cacheDocRef,
       firestoreCacheField: cacheField,
     );
 
