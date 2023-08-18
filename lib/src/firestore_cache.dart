@@ -63,14 +63,13 @@ class FirestoreCache {
     return doc;
   }
 
-  /// Fetch documents once with read from cache first then server, based on a date system.
+  /// Fetch documents once from cache first then server, based on a date system.
   ///
   /// Will attempt to read the [firestoreCacheField] field of the [cacheDocRef] document to determine if the cache is stale.
   /// So it may cost 1 read, even if cache is up to date.
   /// And it may cause some delay when offline (waiting for timeout).
   ///
-  /// Use [cacheOnly] to force reading from cache only, skipping server's date check.
-  /// In that case, if cache is empty, it will return an empty snapshot.
+  /// Use [cacheMode] to choose cache behavior.
   ///
   /// This method takes in a [query] which is the usual Firestore [Query] object
   /// used to query a collection, and a [cacheDocRef] which is the timestamp
@@ -94,14 +93,44 @@ class FirestoreCache {
     required String firestoreCacheField,
     String? localCacheKey,
     bool isUpdateCacheDate = true,
-    bool cacheOnly = false,
+    FirestoreCacheMode cacheMode = FirestoreCacheMode.cacheOrServer,
+    dynamic serversDateRaw,
+  }) {
+    switch (cacheMode) {
+      case FirestoreCacheMode.cacheOrServer:
+        return getDocumentsFromCacheOrServer(
+          query: query,
+          cacheDocRef: cacheDocRef,
+          firestoreCacheField: firestoreCacheField,
+          localCacheKey: localCacheKey,
+          isUpdateCacheDate: isUpdateCacheDate,
+          serversDateRaw: serversDateRaw,
+        );
+      case FirestoreCacheMode.cacheThenServer:
+        return getDocumentsFromCacheThenServer(
+          query: query,
+          cacheDocRef: cacheDocRef,
+          firestoreCacheField: firestoreCacheField,
+          localCacheKey: localCacheKey,
+          isUpdateCacheDate: isUpdateCacheDate,
+          serversDateRaw: serversDateRaw,
+        );
+      case FirestoreCacheMode.cacheOnly:
+        return getDocumentsFromCacheOnly(
+          query: query,
+        );
+    }
+  }
+
+  /// Shortcut for [getDocuments] with [cacheMode] set to [FirestoreCacheMode.cacheOrServer].
+  static Future<QuerySnapshot<Map<String, dynamic>>> getDocumentsFromCacheOrServer({
+    required Query<Map<String, dynamic>> query,
+    required DocumentReference<Map<String, dynamic>> cacheDocRef,
+    required String firestoreCacheField,
+    String? localCacheKey,
+    bool isUpdateCacheDate = true,
     dynamic serversDateRaw,
   }) async {
-    // If it is set to read from cache only, directly return the snapshot from cache, without fallback.
-    if (cacheOnly) {
-      return await query.get(const GetOptions(source: Source.cache));
-    }
-
     // Determine whether to fetch documents from cache or server.
     localCacheKey = localCacheKey ?? firestoreCacheField;
     final shouldFetch = await shouldFetchDocuments(
@@ -110,15 +139,78 @@ class FirestoreCache {
       localCacheKey,
       serversDateRaw,
     );
-    final src = shouldFetch ? Source.serverAndCache : Source.cache;
 
     // Fetch documents from source.
-    var snapshot = await query.get(GetOptions(source: src));
+    return await _getDocumentsFromSource(
+      query: query,
+      source: shouldFetch ? Source.serverAndCache : Source.cache,
+      localCacheKey: localCacheKey,
+      isUpdateCacheDate: isUpdateCacheDate,
+    );
+  }
+
+  /// Shortcut for [getDocuments] with [cacheMode] set to [FirestoreCacheMode.cacheThenServer].
+  static Future<QuerySnapshot<Map<String, dynamic>>> getDocumentsFromCacheThenServer({
+    required Query<Map<String, dynamic>> query,
+    required DocumentReference<Map<String, dynamic>> cacheDocRef,
+    required String firestoreCacheField,
+    String? localCacheKey,
+    bool isUpdateCacheDate = true,
+    dynamic serversDateRaw,
+  }) async {
+    // Get documents from cache first
+    final task = getDocumentsFromCacheOnly(query: query);
+
+    // Update cache from server in background
+    unawaited(() async {
+      // Determine whether to fetch documents from cache or server.
+      localCacheKey = localCacheKey ?? firestoreCacheField;
+      final shouldFetch = await shouldFetchDocuments(
+        cacheDocRef,
+        firestoreCacheField,
+        localCacheKey!,
+        serversDateRaw,
+      );
+
+      // Ignore if no need to update cache
+      if (!shouldFetch) return;
+
+      // Fetch documents from source.
+      await _getDocumentsFromSource(
+        query: query,
+        source: Source.serverAndCache,
+        localCacheKey: localCacheKey!,
+        isUpdateCacheDate: isUpdateCacheDate,
+      );
+    } ());
+
+    // Wait for cache result
+    return await task;
+  }
+
+  /// Shortcut for [getDocuments] with [cacheMode] set to [FirestoreCacheMode.cacheOnly].
+  static Future<QuerySnapshot<Map<String, dynamic>>> getDocumentsFromCacheOnly({
+    required Query<Map<String, dynamic>> query,
+  }) {
+    return query.get(const GetOptions(source: Source.cache));
+  }
+
+  /// Fetch documents from [source].
+  /// If [source] is [Source.cache], will fallback to [Source.server] if cache is empty.
+  /// If [isUpdateCacheDate] is true, will update the local cache date if needed.
+  static Future<QuerySnapshot<Map<String, dynamic>>> _getDocumentsFromSource({
+    required Query<Map<String, dynamic>> query,
+    required Source source,
+    required String localCacheKey,
+    bool isUpdateCacheDate = true,
+  }) async {
+    // Fetch documents from source.
+    var snapshot = await query.get(GetOptions(source: source));
 
     // If it is triggered to get documents from cache but the documents do not
     // exist, which means documents may have been removed from cache, we then
     // fallback to default get documents behavior.
-    if (src == Source.cache && snapshot.docs.isEmpty) {
+    if (source == Source.cache && snapshot.docs.isEmpty) {
       snapshot = await query.get();
     }
 
@@ -183,6 +275,9 @@ class FirestoreCache {
     return controller.stream;
   }
 
+  /// Whether to fetch documents from server.
+  /// Will read latest date from server and compare it to local date,
+  /// to check if cache is stale, so it may cost 1 read, except if [serverDateRaw] is provided.
   @visibleForTesting
   static Future<bool> shouldFetchDocuments(
     DocumentReference<Map<String, dynamic>> cacheDocRef,
@@ -224,4 +319,25 @@ class FirestoreCache {
 
     return shouldFetch;
   }
+}
+
+enum FirestoreCacheMode {
+  /// Read from cache first, or from server if cache is empty or stale.
+  /// Will read latest date from server to check if cache is stale, so it may cost 1 read.
+  ///
+  /// This is the default mode. You are sure to have the latest data available, but it takes some delay and may cost 1 read.
+  cacheOrServer,
+
+  /// Read from cache, then update cache from server in background if stale.
+  /// If cache is empty, read data from server.
+  /// Will read latest date from server to check if cache is stale, so it may cost 1 read.
+  ///
+  /// This mode is useful if it's not important to get the latest data immediately (usually app will display new data next launch).
+  /// This way data will be available very quickly (from cache), and will be updated in background if needed.
+  cacheThenServer,
+
+  /// Read from cache only, without any fallbacks.
+  ///
+  /// This mode is useful if you know device is offline and you want to avoid any delay (returns cache quickly).
+  cacheOnly,
 }
