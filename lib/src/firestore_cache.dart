@@ -166,10 +166,10 @@ class FirestoreCache {
     dynamic serverDateRaw,
   }) async {
     // Get documents from cache first
-    final task = getDocumentsFromCacheOnly(query: query);
+    final getFromCacheTask = getDocumentsFromCacheOnly(query: query);
 
     // Update cache from server in background
-    unawaited(() async {
+    final updateCacheTask = () async {
       // Determine whether to fetch documents from cache or server.
       localCacheKey = localCacheKey ?? firestoreCacheField;
       final shouldFetch = await shouldFetchDocuments(
@@ -180,19 +180,22 @@ class FirestoreCache {
       );
 
       // Ignore if no need to update cache
-      if (!shouldFetch) return;
+      if (!shouldFetch) return null;
 
       // Fetch documents from source.
-      await _getDocumentsFromSource(
+      return await _getDocumentsFromSource(
         query: query,
         source: Source.serverAndCache,
         localCacheKey: localCacheKey!,
         updateLocalCacheDate: updateLocalCacheDate,
       );
-    } ());
+    } ();
 
     // Wait for cache result
-    return await task;
+    final cachedResult = await getFromCacheTask;
+
+    // If cache is empty, wait for the server result
+    return cachedResult.docs.isEmpty ? (await updateCacheTask)! : cachedResult;
   }
 
   /// Shortcut for [getDocuments] with [cacheMode] set to [FirestoreCacheMode.cacheOnly].
