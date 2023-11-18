@@ -308,7 +308,21 @@ class FirestoreCache {
       final cacheDate = DateTime.parse(dateStr);
 
       if (serverDateRaw == null) {
-        final doc = await firebaseCacheDocRef.get();
+        final doc = await () async {
+          try {
+            return await firebaseCacheDocRef.get();
+          } on FirebaseException catch(e) {
+            if (e.code == 'unavailable') {
+              // Document cache is unavailable and server is unreachable.
+            } else {
+              rethrow;
+            }
+          }
+          return null;
+        } ();
+        // If failed to get date, return false
+        if (doc == null) return false;
+
         final data = doc.data();
         if (!doc.exists) {
           throw CacheDocDoesNotExist();
